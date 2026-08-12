@@ -1,0 +1,41 @@
+name: ارسال نرخ‌ها به تلگرام
+
+# هر ۶ ساعت: ساعت‌های ۳ بامداد، ۹ صبح، ۳ بعدازظهر و ۹ شب به وقت تهران
+# تهران = UTC+3:30 → ۳:۰۰ = ۲۳:۳۰ (روز قبل) | ۹:۰۰ = ۰۵:۳۰ | ۱۵:۰۰ = ۱۱:۳۰ | ۲۱:۰۰ = ۱۷:۳۰
+on:
+  schedule:
+    - cron: "30 5,11,17,23 * * *"
+  workflow_dispatch: # دکمه «Run workflow» برای اجرای دستی
+
+jobs:
+  send-rates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v5
+
+      - name: نصب پایتون
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: بررسی وجود سکرت‌ها
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          if [ -z "$TELEGRAM_TOKEN" ]; then
+            echo "::error::سکرت TELEGRAM_TOKEN تعریف نشده است."; exit 1
+          fi
+          if [ -z "$CHAT_ID" ]; then
+            echo "::error::سکرت CHAT_ID تعریف نشده است."; exit 1
+          fi
+          echo "✅ سکرت‌ها موجودند."
+
+      - name: ارسال نرخ‌ها به تلگرام
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          PYTHONUNBUFFERED: "1"
+        run: python3 rates_bot.py --once
