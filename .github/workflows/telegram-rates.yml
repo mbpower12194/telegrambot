@@ -1,0 +1,108 @@
+name: ارسال نرخ‌ها به تلگرام
+
+# ⏰ ساعت‌های واقعیِ اجرا: ۰۷، ۱۱، ۱۵، ۱۹ به وقت تهران
+#    (یک ساعت زودتر از ساعت‌های اعلام‌شده، چون سرور تأخیر دارد)
+# 🏷 ساعت‌هایی که در پیام به کاربر نوشته می‌شود: ۰۸، ۱۲، ۱۶، ۲۰ — بدون تغییر.
+#
+# تهران = UTC+3:30 → ۰۷:۰۰ = ۰۳:۳۰ | ۱۱:۰۰ = ۰۷:۳۰ | ۱۵:۰۰ = ۱۱:۳۰ | ۱۹:۰۰ = ۱۵:۳۰
+#
+# ⏰ زمان‌بندی اصلی: cron-job.org (دقیق، از بیرون صدا می‌زند)
+#    راهنمای راه‌اندازی → CRON_SETUP.md
+#    ⚠️ در cron-job.org هم باید ساعت‌ها به ۰۷، ۱۱، ۱۵، ۱۹ تغییر کند.
+#
+# کرانِ داخلی گیت‌هاب به‌عنوان «پشتیبان» فعال است؛ اسکریپت با قفلِ
+# ضدتکرار تشخیص می‌دهد که پیامِ این نوبت قبلاً رفته و دوباره نمی‌فرستد.
+# پس اگر cron-job.org قطع شد، باز هم پیام می‌رسد (فقط با کمی تأخیر).
+on:
+  repository_dispatch:
+    types: [send-rates]
+  # ⚠️ کرانِ گیت‌هاب معمولاً ۵ تا ۲۰ دقیقه دیر اجرا می‌شود.
+  # برای همین ۱۵ دقیقه **زودتر** تنظیم شده تا وقتی دیر شود، تازه سرِ
+  # ساعتِ هدف برسد. اسکریپت اگر زود برسد تا سرِ ساعت صبر می‌کند.
+  # ۰۳:۱۵ UTC = ۰۶:۴۵ تهران → هدف ۰۷:۰۰ (که کاربر آن را ۰۸:۰۰ می‌بیند)
+  schedule:
+    - cron: "15 3,7,11,15 * * *"
+  workflow_dispatch:      # دکمه «Run workflow» برای اجرای دستی
+  push:                   # با هر آپلود/تغییر کد، یک اجرای آزمایشی انجام می‌شود
+    branches: [main]
+    paths:
+      - "rates_bot.py"
+      - ".github/workflows/telegram-rates.yml"
+
+# اگر اجرای قبلی تمام نشده، اجرای جدید جایگزینش شود
+concurrency:
+  group: telegram-rates
+  cancel-in-progress: false
+
+jobs:
+  send-rates:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45   # تا ۳۵ دقیقه صبر برای هم‌ترازی با سرِ ساعت + حاشیه
+    steps:
+      - name: دریافت کد
+        uses: actions/checkout@v5
+
+      - name: نصب پایتون
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: بررسی وجود سکرت‌ها
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: |
+          ok=1
+          if [ -z "$TELEGRAM_TOKEN" ]; then
+            echo "::error::سکرت TELEGRAM_TOKEN تعریف نشده است (Settings → Secrets and variables → Actions)."; ok=0
+          else
+            echo "✅ TELEGRAM_TOKEN موجود است (طول: ${#TELEGRAM_TOKEN})"
+          fi
+          if [ -z "$CHAT_ID" ]; then
+            echo "::error::سکرت CHAT_ID تعریف نشده است."; ok=0
+          else
+            echo "✅ CHAT_ID موجود است (طول: ${#CHAT_ID})"
+          fi
+          [ "$ok" = "1" ] || exit 1
+
+      - name: تست اتصال به تلگرام
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        run: |
+          res=$(curl -s "https://api.telegram.org/bot${TELEGRAM_TOKEN}/getMe")
+          if echo "$res" | grep -q '"ok":true'; then
+            echo "✅ توکن معتبر است: $(echo "$res" | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["username"])')"
+          else
+            echo "::error::توکن تلگرام نامعتبر است → $res"; exit 1
+          fi
+
+      # نشانه‌ی «این نوبت قبلاً ارسال شد» را بین اجراها نگه می‌دارد،
+      # چون رانرِ گیت‌هاب هر بار از صفر ساخته می‌شود.
+      - name: بازیابی نشانه‌ی آخرین ارسال
+        uses: actions/cache/restore@v4
+        with:
+          path: .sent_marker
+          key: sent-marker-${{ github.run_id }}
+          restore-keys: sent-marker-
+
+      - name: ارسال نرخ‌ها به تلگرام
+        env:
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          CHAT_ID: ${{ secrets.CHAT_ID }}
+          PYTHONUNBUFFERED: "1"
+          # cron-job.org دقیق است → هم‌ترازی لازم ندارد، فوری بفرست.
+          # کرانِ پشتیبانِ گیت‌هاب ۱۵ دقیقه زودتر می‌زند → هم‌ترازی روشن
+          #   تا اگر زود رسید، سرِ ساعت بفرستد (و اگر دیر شد، فوری).
+          # اجرای دستی و push → فوری، بدون صبر.
+          NO_ALIGN: ${{ github.event_name == 'schedule' && '0' || '1' }}
+          # جلوگیری از ارسال دوباره وقتی هم cron-job.org و هم کرانِ
+          # پشتیبان در یک نوبت اجرا شوند.
+          DEDUPE_WINDOW: "3600"
+        run: python3 rates_bot.py --once
+
+      - name: ذخیره‌ی نشانه‌ی آخرین ارسال
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: .sent_marker
+          key: sent-marker-${{ github.run_id }}
